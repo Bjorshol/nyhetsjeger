@@ -1,65 +1,268 @@
-import Image from "next/image";
+// app/page.tsx
+"use client";
 
-export default function Home() {
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+const SUPABASE_URL = "https://votqycajyxathlonvddk.supabase.co";
+const SUPABASE_ANON =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZvdHF5Y2FqeXhhdGhsb252ZGRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc3OTc3MjcsImV4cCI6MjA3MzM3MzcyN30.ZNS-U24UOGmngkXU3j9fOWcXoo3LU2W5ELLfqWPhrH0";
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
+
+type Row = {
+  id: number;
+  etat: string | null;
+  innhold: string | null;
+  saksnr: string | null;
+  jdato_date: string | null;
+  avsmot: string | null;
+  kw_score: number | null;
+};
+
+const CONTACTS: Record<string, string> = {
+  "Levanger kommune": "postmottak@levanger.kommune.no",
+  "Verdal kommune": "postmottak@verdal.kommune.no",
+  "Trøndelag fylkeskommune": "postmottak@trondelagfylke.no",
+  "Statsforvalteren i Trøndelag": "sftl.post@statsforvalteren.no",
+  "Helse Nord-Trøndelag HF": "postmottak@hnt.no",
+  "Helse Midt-Norge RHF": "hmn.postmottak@helse-midt.no",
+};
+
+const fmtDate = (v: string | null) => {
+  if (!v) return "—";
+  const t = new Date(v).getTime();
+  if (Number.isNaN(t)) return String(v);
+  const d = new Date(t);
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${dd}.${mm}.${yyyy}`;
+};
+
+const esc = (s: unknown) =>
+  (s ?? "")
+    .toString()
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+
+function getContactEmail(etat: string | null) {
+  if (!etat) return "";
+  if (Object.prototype.hasOwnProperty.call(CONTACTS, etat)) return CONTACTS[etat];
+  const hit = Object.keys(CONTACTS).find((k) =>
+    etat.toLowerCase().includes(k.toLowerCase())
+  );
+  return hit ? CONTACTS[hit] : "";
+}
+
+function buildMailto(r: Row) {
+  const to = getContactEmail(r.etat) || "";
+  const subject = encodeURIComponent(`Innsyn i dokument – ${r.saksnr ?? ""}`);
+  const body = [
+    "Hei,",
+    "",
+    "Jeg ber med dette om innsyn i dokumentet.",
+    `Tittel: ${r.innhold ?? ""}`,
+    `Saksnummer: ${r.saksnr ?? ""}`,
+    `Avsender/mottaker: ${r.avsmot ?? ""}`,
+    "",
+    "Kravet fremsettes etter offentleglova. Jeg ber om elektronisk innsyn.",
+    "",
+    "Med vennlig hilsen,",
+  ].join("\n");
+
+  return `mailto:${to}?subject=${subject}&body=${encodeURIComponent(body)}`;
+}
+
+export default function Page() {
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [sortMode, setSortMode] = useState<"beste" | "nyeste">("beste");
+  const [openIds, setOpenIds] = useState<Set<number>>(new Set());
+  const headerRef = useRef<HTMLElement | null>(null);
+
+  // sticky thead under header
+  useEffect(() => {
+    const syncHeaderHeight = () => {
+      const h = headerRef.current?.offsetHeight ?? 64;
+      document.documentElement.style.setProperty("--header-h", `${h}px`);
+    };
+    syncHeaderHeight();
+    window.addEventListener("resize", syncHeaderHeight);
+    return () => window.removeEventListener("resize", syncHeaderHeight);
+  }, []);
+
+  const load = async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const { data, error } = await supabase
+        .from("recommended_entries")
+        .select("id, etat, innhold, saksnr, jdato_date, avsmot, kw_score")
+        .order("kw_score", { ascending: false })
+        .limit(25);
+      if (error) throw error;
+      setRows(data ?? []);
+    } catch (e: any) {
+      console.error(e);
+      setErrorMsg(e?.message ?? "Ukjent feil");
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const sorted = useMemo(() => {
+    const list = [...rows];
+    if (sortMode === "nyeste") {
+      list.sort(
+        (a, b) =>
+          new Date(b.jdato_date || 0).getTime() -
+          new Date(a.jdato_date || 0).getTime()
+      );
+    } else {
+      list.sort(
+        (a, b) =>
+          (b.kw_score ?? Number.NEGATIVE_INFINITY) -
+          (a.kw_score ?? Number.NEGATIVE_INFINITY)
+      );
+    }
+    return list;
+  }, [rows, sortMode]);
+
+  const toggleOpen = (id: number) => {
+    setOpenIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <>
+      <header ref={headerRef as any}>
+        <h1>Nyhetsjeger – Anbefalte dokumenter</h1>
+        <div className="toolbar">
+          <select
+            id="sort"
+            className="select"
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as any)}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            <option value="beste">Beste først (anbefalt)</option>
+            <option value="nyeste">Nyeste først</option>
+          </select>
+          <button className="button" onClick={load} disabled={loading}>
+            {loading ? "Laster…" : "Oppdater"}
+          </button>
         </div>
+      </header>
+
+      <main>
+        <section className="card">
+          <table>
+            <thead>
+              <tr>
+                <th>Virksomhet</th>
+                <th>Tittel</th>
+                <th>Saksnr</th>
+                <th className="right">Dato</th>
+              </tr>
+            </thead>
+            <tbody>
+              {errorMsg && (
+                <tr>
+                  <td colSpan={4} className="empty">
+                    Feil: {esc(errorMsg)}
+                  </td>
+                </tr>
+              )}
+
+              {!errorMsg && loading && (
+                <tr>
+                  <td colSpan={4} className="muted">
+                    Laster…
+                  </td>
+                </tr>
+              )}
+
+              {!errorMsg && !loading && sorted.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="empty">
+                    Ingen anbefalinger funnet.
+                  </td>
+                </tr>
+              )}
+
+              {!errorMsg &&
+                !loading &&
+                sorted.map((r) => (
+                  <Fragment key={r.id}>
+                    <tr>
+                      <td className="muted">{esc(r.etat ?? "—")}</td>
+                      <td>
+                        <button className="title-btn" onClick={() => toggleOpen(r.id)}>
+                          {esc(r.innhold ?? "—")}
+                        </button>
+                      </td>
+                      <td>{esc(r.saksnr ?? "—")}</td>
+                      <td className="right">{esc(fmtDate(r.jdato_date))}</td>
+                    </tr>
+
+                    <tr className={openIds.has(r.id) ? "details open" : "details"}>
+                      <td colSpan={4}>
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "1fr 1fr",
+                            gap: "8px 16px",
+                          }}
+                        >
+                          <div>
+                            <span className="muted">Virksomhet:</span>
+                            <br />
+                            {esc(r.etat ?? "—")}
+                          </div>
+                          <div>
+                            <span className="muted">Saksnr:</span>
+                            <br />
+                            {esc(r.saksnr ?? "—")}
+                          </div>
+                          <div>
+                            <span className="muted">Journaldato:</span>
+                            <br />
+                            {esc(fmtDate(r.jdato_date))}
+                          </div>
+                          <div>
+                            <span className="muted">Tittel:</span>
+                            <br />
+                            {esc(r.innhold ?? "—")}
+                          </div>
+                          <div>
+                            <span className="muted">Avsender/mottaker:</span>
+                            <br />
+                            {esc(r.avsmot ?? "—")}
+                          </div>
+                        </div>
+                        <div style={{ marginTop: 12 }}>
+                          <a className="button" href={buildMailto(r)}>
+                            Be om innsyn i dokumentet
+                          </a>
+                        </div>
+                      </td>
+                    </tr>
+                  </Fragment>
+                ))}
+            </tbody>
+          </table>
+        </section>
       </main>
-    </div>
+    </>
   );
 }

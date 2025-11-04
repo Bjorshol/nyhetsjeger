@@ -2,6 +2,7 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { createClient } from "@supabase/supabase-js";
 
 // Supabase-klient (bruk .env.local og Vercel env)
@@ -145,7 +146,6 @@ export default function Page() {
   };
 
   useEffect(() => {
-    // hent først når auth er ok
     if (!checkingAuth) load();
   }, [checkingAuth]);
 
@@ -175,7 +175,6 @@ export default function Page() {
     });
   };
 
-  // Vis lasteskjerm mens vi sjekker auth
   if (checkingAuth) {
     return <main style={{ padding: 40 }}>Laster…</main>;
   }
@@ -194,9 +193,15 @@ export default function Page() {
             <option value="beste">Beste først (anbefalt)</option>
             <option value="nyeste">Nyeste først</option>
           </select>
+
           <button className="button" onClick={load} disabled={loading}>
             {loading ? "Laster…" : "Oppdater"}
           </button>
+
+          {/* NY KNAPP TIL /postlister */}
+          <Link href="/postlister" className="button" style={{ marginLeft: 8 }}>
+            Postlister
+          </Link>
 
           {userEmail ? (
             <button

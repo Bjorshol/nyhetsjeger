@@ -1,0 +1,69 @@
+name: Nightly scrapers
+
+on:
+  schedule:
+    - cron: "0 1 * * *"   # 01:00 UTC = 02:00 norsk tid (CET). Endre til 00:00 UTC ved sommertid hvis du vil ha 02:00.
+  workflow_dispatch:       # lar deg starte manuelt fra GitHub
+
+env:
+  SUPABASE_URL: "https://votycqayjxathlonvddk.supabase.co"
+  FUNCTIONS_PATH: "/functions/v1"
+
+jobs:
+  batch_collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kick off collectors (hnt_postliste, hmn_postliste, scrape_nord, kommunale_postlister)
+        run: |
+          set -euo pipefail
+          call() {
+            fn="$1"
+            echo "→ Calling $fn ..."
+            # 3 forsøk med 30s pause ved feil (nett/flaky)
+            for i in 1 2 3; do
+              if curl -sS --fail -X POST \
+                   "$SUPABASE_URL$FUNCTIONS_PATH/$fn" \
+                   -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+                   -H "Content-Type: application/json" \
+                   -d '{}' ; then
+                echo "✓ $fn ok"
+                break
+              else
+                echo "✗ $fn failed (attempt $i)."
+                if [ "$i" -lt 3 ]; then sleep 30; fi
+              fi
+            done
+          }
+          call hnt_postliste
+          call hmn_postliste
+          call scrape_nord
+          call kommunale_postlister
+
+  batch_parse:
+    needs: batch_collect
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait 5 minutes to let collectors finish
+        run: sleep 300
+      - name: Run parsers (hnt_parse, nord_parse)
+        run: |
+          set -euo pipefail
+          call() {
+            fn="$1"
+            echo "→ Calling $fn ..."
+            for i in 1 2 3; do
+              if curl -sS --fail -X POST \
+                   "$SUPABASE_URL$FUNCTIONS_PATH/$fn" \
+                   -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+                   -H "Content-Type: application/json" \
+                   -d '{}' ; then
+                echo "✓ $fn ok"
+                break
+              else
+                echo "✗ $fn failed (attempt $i)."
+                if [ "$i" -lt 3 ]; then sleep 30; fi
+              fi
+            done
+          }
+          call hnt_parse
+          call nord_parse

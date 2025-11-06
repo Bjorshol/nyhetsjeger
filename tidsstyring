@@ -1,0 +1,16 @@
+# .github/workflows/scrape.yml
+name: Run daily scrapers
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # hver dag kl 06:00 norsk tid
+  workflow_dispatch:       # lar deg starte manuelt fra GitHub UI
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Supabase function
+        run: |
+          curl -X POST "https://votycqayjxathlonvdkk.supabase.co/functions/v1/ein_result_scrape?days=3" \
+               -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"

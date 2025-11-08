@@ -3,16 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-// --- Supabase client (public anon) ---
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// --- Enkle farger/stil (globalt for denne siden) ---
 const styles = `
 :root {
   --bg:#0b0e14; --card:#121826; --muted:#8aa0b6; --text:#e6edf3; --accent:#4ea1ff; --border:#223044; --pill:#1c2536;
+  --header-h: 64px;
 }
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--text)}
@@ -24,9 +23,13 @@ h1{margin:0 0 8px;font-size:20px}
 .button{cursor:pointer}
 .button[disabled]{opacity:.5;cursor:default}
 main{padding:16px 20px 40px;max-width:1200px;margin:0 auto}
-.card{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:visible}
 table{width:100%;border-collapse:collapse}
-thead th{text-align:left;font-weight:600;padding:12px 14px;background:#0f1522;color:var(--muted);border-bottom:1px solid var(--border);position:sticky;top:64px;z-index:5}
+thead th{
+  text-align:left;font-weight:600;padding:12px 14px;background:#0f1522;color:var(--muted);
+  border-bottom:1px solid var(--border);
+  position:sticky; top:var(--header-h); z-index:20;
+}
 tbody tr{border-bottom:1px solid var(--border)}
 td{padding:12px 14px;vertical-align:top}
 .etat{color:var(--muted);font-weight:600}
@@ -46,8 +49,8 @@ td{padding:12px 14px;vertical-align:top}
 `;
 
 type Entry = {
-  uid?: string | null;   // hvis du har uid
-  id?: number | string;  // fallback hvis ikke
+  uid?: string | null;
+  id?: number | string;
   etat: string | null;
   innhold: string | null;
   saksnr: string | null;
@@ -79,8 +82,8 @@ function getContactEmail(etat?: string | null) {
 }
 
 function encodeRFC3986(str: string) {
-  return encodeURIComponent(str).replace(/[!*'()]/g, (c) =>
-    `%${c.charCodeAt(0).toString(16)}`
+  return encodeURIComponent(str).replace(/[!'()*]/g, (c) =>
+    `%${c.charCodeAt(0).toString(16).toUpperCase()}`
   );
 }
 
@@ -88,13 +91,9 @@ function fmtDateHuman(s?: string | null) {
   if (!s) return "—";
   try {
     const d = s.length === 10 ? new Date(`${s}T00:00:00`) : new Date(s);
-    return d.toLocaleDateString("no-NO", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
+    return d.toLocaleDateString("no-NO", { year: "numeric", month: "2-digit", day: "2-digit" });
   } catch {
-    return s;
+    return s as string;
   }
 }
 
@@ -139,6 +138,71 @@ function esc(s?: string | null) {
 }
 
 export default function PostlisterPage() {
+  // sticky offset
+  const headerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const setVar = () => {
+      const h = el.offsetHeight || 64;
+      document.documentElement.style.setProperty("--header-h", `${h}px`);
+    };
+    setVar();
+    const ro = new ResizeObserver(setVar);
+    ro.observe(el);
+    window.addEventListener("resize", setVar);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", setVar);
+    };
+  }, []);
+
+  // user + session + logger
+  const [userId, setUserId] = useState<string | null>(null);
+  const [sessionId] = useState(() => {
+    const k = "nj_session_id";
+    if (typeof window === "undefined") return null;
+    let v = localStorage.getItem(k);
+    if (!v) { v = crypto.randomUUID(); localStorage.setItem(k, v); }
+    return v;
+  });
+
+  useEffect(() => {
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      setUserId(user?.id ?? null);
+    })();
+  }, []);
+
+  async function logEvent(
+    entry_uid: string,
+    action: "view_details" | "click_mailto",
+    r: Entry
+  ) {
+    if (!userId) return;
+    try {
+      await supabase.from("entry_events").insert({
+        user_id: userId,
+        entry_uid,
+        action,
+        session_id: sessionId,
+        etat: r.etat,
+        innhold: r.innhold,
+        avsmot: r.avsmot,
+        extra: {
+          saksnr: r.saksnr,
+          source_type: r.source_type,
+          source_url: r.source_url,
+        },
+      });
+    } catch (e) {
+      console.warn("logEvent failed", e);
+    }
+  }
+
+  const seenDetails = useRef<Set<string>>(new Set());
+
+  // state
   const [q, setQ] = useState("");
   const [sourceType, setSourceType] = useState("");
   const [limit, setLimit] = useState(100);
@@ -149,8 +213,8 @@ export default function PostlisterPage() {
   const searchTimer = useRef<number | undefined>(undefined);
 
   const from = page * limit;
-
-  const columns = `uid, id, etat, innhold, saksnr, jdato, dokdato, source_type, source_url, avsmot, betegnelse, aar, sekvens, tilgangskode, hentet_tid, extra`;
+  const columns =
+    "uid, id, etat, innhold, saksnr, jdato, dokdato, source_type, source_url, avsmot, betegnelse, aar, sekvens, tilgangskode, hentet_tid, extra";
 
   async function load() {
     setLoading(true);
@@ -163,8 +227,8 @@ export default function PostlisterPage() {
 
       if (sourceType) query = query.eq("source_type", sourceType);
       if (q.trim()) {
-        // søk i både etat og tittel/innhold
-        query = query.or(`etat.ilike.%${q.trim()}%,innhold.ilike.%${q.trim()}%`);
+        const term = q.trim();
+        query = query.or(`etat.ilike.%${term}%,innhold.ilike.%${term}%`);
       }
       query = query.range(from, from + limit - 1);
 
@@ -203,9 +267,11 @@ export default function PostlisterPage() {
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: styles }} />
-      <header>
+      <header ref={headerRef as any}>
         <h1>Nyhetsjeger – Postlister</h1>
         <div className="toolbar">
+          <a className="button" href="/postlister">Postlister</a>
+
           <input
             className="input"
             type="search"
@@ -259,12 +325,22 @@ export default function PostlisterPage() {
                   const key = (r.uid ?? r.id ?? Math.random()).toString();
                   const dato = r.jdato || r.dokdato || null;
                   return [
-                    <tr key={key} className="row" onClick={(e) => {
-                      const tr = (e.currentTarget as HTMLTableRowElement);
-                      const open = tr.classList.contains("open");
-                      document.querySelectorAll("tbody .row.open").forEach((el) => el.classList.remove("open"));
-                      if (!open) tr.classList.add("open");
-                    }}>
+                    <tr
+                      key={key}
+                      className="row"
+                      onClick={(e) => {
+                        const tr = e.currentTarget as HTMLTableRowElement;
+                        const open = tr.classList.contains("open");
+                        document.querySelectorAll("tbody .row.open").forEach((el) => el.classList.remove("open"));
+                        if (!open) {
+                          tr.classList.add("open");
+                          if (!seenDetails.current.has(key)) {
+                            seenDetails.current.add(key);
+                            logEvent(String(r.uid ?? r.id ?? ""), "view_details", r);
+                          }
+                        }
+                      }}
+                    >
                       <td className="etat">{esc(r.etat || "–")}</td>
                       <td>
                         <button className="title-btn">{esc(r.innhold || "—")}</button>
@@ -289,7 +365,15 @@ export default function PostlisterPage() {
                           ) : (
                             <span className="muted">Ingen lenke</span>
                           )}
-                          <a className="button" href={buildMailtoHref(r)} target="_blank" rel="noopener noreferrer">Send innsynskrav</a>
+                          <a
+                            className="button"
+                            href={buildMailtoHref(r)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => logEvent(String(r.uid ?? r.id ?? ""), "click_mailto", r)}
+                          >
+                            Send innsynskrav
+                          </a>
                           <button
                             className="button"
                             onClick={async (ev) => {

@@ -70,7 +70,7 @@ export default function LoginPage() {
   }
 
   setMsg("Innlogging vellykket. Sender deg videre …");
-  router.replace("/feed");
+  router.replace("/app"); // Send til appen
 }
 
   async function resetPassword(e: React.FormEvent) {

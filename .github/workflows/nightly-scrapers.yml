@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        fn: [hnt_postliste, hmn_postliste, scrape_nord, kommunale_postlister]
+        fn: [smooth_processor, hmn_postliste, scrape_nord, bright_processor]
 
     steps:
       - name: Derive project ref and functions base

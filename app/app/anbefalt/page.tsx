@@ -197,7 +197,7 @@ const [sessionId] = useState<string | null>(() => {
         .from("recommended_entries")
         .select("id, etat, innhold, saksnr, jdato_date, avsmot, kw_score")
         .order("kw_score", { ascending: false })
-        .limit(25);
+        .limit(250);
       if (error) throw error;
       setRows(data ?? []);
     } catch (e: any) {

@@ -2,97 +2,94 @@ name: Nightly scrapers
 
 on:
   schedule:
-    - cron: "0 1 * * *"   # 01:00 UTC = 02:00 norsk tid
+    - cron: "0 1 * * *"   # 01:00 UTC = 02:00 norsk tid (03:00 i sommertid)
   workflow_dispatch:
 
 env:
-  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}           # f.eks. https://abcdeftghijklm.supabase.co
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}                 # https://<ref>.supabase.co
   FUNCTIONS_PATH: /functions/v1
-  SRK: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+  ANON: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}        # ikke bruk service role her
+  CRON_KEY: ${{ secrets.CRON_KEY }}                         # samme verdi som i Supabase secrets
 
 jobs:
   batch_collect:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fn: [hnt_postliste, hmn_postliste, scrape_nord, kommunale_postlister]
     steps:
       - name: Sanity check Supabase URL (DNS)
         run: |
           set -e
-          if [ -z "${SUPABASE_URL:-}" ]; then
-            echo "SUPABASE_URL is empty. Set repo secret SUPABASE_URL to your Project URL"; exit 1
-          fi
-          echo "Using $SUPABASE_URL"
+          test -n "${SUPABASE_URL:-}" || { echo "SUPABASE_URL missing"; exit 1; }
           host=$(echo "$SUPABASE_URL" | sed -E 's#https?://([^/]+)/?.*#\1#')
           echo "Resolving $host ..."
           getent hosts "$host" || { echo "DNS lookup failed for $host"; exit 1; }
 
-      - name: Kick off collectors
+      - name: Invoke ${{ matrix.fn }}
         shell: bash
         run: |
           set -euo pipefail
+          url="${SUPABASE_URL}${FUNCTIONS_PATH}/${{ matrix.fn }}"
+          echo "→ POST $url"
+          for i in 1 2 3; do
+            code=$(curl -sS -i --fail-with-body -X POST "$url" \
+              -H "Authorization: Bearer $ANON" \
+              -H "apikey: $ANON" \
+              -H "x-cron-key: $CRON_KEY" \
+              -H "Content-Type: application/json" \
+              --data '{"reason":"github-schedule"}' \
+              -w '%{http_code}' -o /tmp/body) || true
 
-          call() {
-            fn="$1"
-            url="${SUPABASE_URL}${FUNCTIONS_PATH}/${fn}"
-            echo "→ POST $url"
+            echo -e "\nStatus: $code"
+            tail -c 2000 /tmp/body || true
+            echo
 
-            for i in 1 2 3; do
-              http=$(curl -sS -i --fail-with-body -X POST "$url" \
-                -H "Authorization: Bearer $SRK" \
-                -H "apikey: $SRK" \
-                -H "Content-Type: application/json" \
-                -d '{}' \
-                -w '%{http_code}' -o /tmp/curl_body) || true
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "✓ ${{ matrix.fn }} ok"
+              break
+            fi
 
-              echo
-              echo "Status: $http"
-              echo "Body:"; cat /tmp/curl_body || true; echo
-
-              if [ "$http" = "200" ] || [ "$http" = "204" ]; then
-                echo "✓ $fn ok"; break
-              else
-                echo "✗ $fn failed attempt $i"
-                if [ "$i" -lt 3 ]; then sleep 30; else exit 1; fi
-              fi
-            done
-          }
-
-          call hnt_postliste
-          call hmn_postliste
-          call scrape_nord
-          call kommunale_postlister
+            echo "✗ attempt $i"
+            if [ "$i" -lt 3 ]; then sleep 30; else exit 1; fi
+          done
 
   batch_parse:
     needs: batch_collect
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fn: [hnt_parse, nord_parse]
     steps:
-      - name: Wait 5 minutes
+      - name: Wait a bit for collectors
         run: sleep 300
 
-      - name: Run parsers
+      - name: Invoke ${{ matrix.fn }}
         shell: bash
         run: |
           set -euo pipefail
-          call() {
-            fn="$1"
-            url="${SUPABASE_URL}${FUNCTIONS_PATH}/${fn}"
-            echo "→ POST $url"
-            for i in 1 2 3; do
-              http=$(curl -sS -i --fail-with-body -X POST "$url" \
-                -H "Authorization: Bearer $SRK" \
-                -H "apikey: $SRK" \
-                -H "Content-Type: application/json" \
-                -d '{}' \
-                -w '%{http_code}' -o /tmp/curl_body) || true
-              echo
-              echo "Status: $http"
-              echo "Body:"; cat /tmp/curl_body || true; echo
-              if [ "$http" = "200" ] || [ "$http" = "204" ]; then
-                echo "✓ $fn ok"; break
-              else
-                echo "✗ $fn failed attempt $i"
-                if [ "$i" -lt 3 ]; then sleep 30; else exit 1; fi
-              fi
-            done
-          }
-          call hnt_parse
-          call nord_parse
+          url="${SUPABASE_URL}${FUNCTIONS_PATH}/${{ matrix.fn }}"
+          echo "→ POST $url"
+          for i in 1 2 3; do
+            code=$(curl -sS -i --fail-with-body -X POST "$url" \
+              -H "Authorization: Bearer $ANON" \
+              -H "apikey: $ANON" \
+              -H "x-cron-key: $CRON_KEY" \
+              -H "Content-Type: application/json" \
+              --data '{"reason":"github-schedule"}' \
+              -w '%{http_code}' -o /tmp/body) || true
+
+            echo -e "\nStatus: $code"
+            tail -c 2000 /tmp/body || true
+            echo
+
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
+              echo "✓ ${{ matrix.fn }} ok"
+              break
+            fi
+
+            echo "✗ attempt $i"
+            if [ "$i" -lt 3 ]; then sleep 30; else exit 1; fi
+          done

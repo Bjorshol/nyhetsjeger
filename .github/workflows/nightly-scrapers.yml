@@ -2,14 +2,13 @@ name: Nightly scrapers
 
 on:
   schedule:
-    - cron: "0 1 * * *"   # 01:00 UTC = 02:00 norsk tid (03:00 i sommertid)
+    - cron: "0 1 * * *"   # 01:00 UTC = 02:00 vinter / 03:00 sommer i Oslo
   workflow_dispatch:
 
 env:
-  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}                 # https://<ref>.supabase.co
-  FUNCTIONS_PATH: /functions/v1
-  ANON: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}        # ikke bruk service role her
-  CRON_KEY: ${{ secrets.CRON_KEY }}                         # samme verdi som i Supabase secrets
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  ANON: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+  CRON_KEY: ${{ secrets.CRON_KEY }}
 
 jobs:
   batch_collect:
@@ -19,20 +18,36 @@ jobs:
       matrix:
         fn: [hnt_postliste, hmn_postliste, scrape_nord, kommunale_postlister]
     steps:
-      - name: Sanity check Supabase URL (DNS)
-        run: |
-          set -e
-          test -n "${SUPABASE_URL:-}" || { echo "SUPABASE_URL missing"; exit 1; }
-          host=$(echo "$SUPABASE_URL" | sed -E 's#https?://([^/]+)/?.*#\1#')
-          echo "Resolving $host ..."
-          getent hosts "$host" || { echo "DNS lookup failed for $host"; exit 1; }
-
-      - name: Invoke ${{ matrix.fn }}
+      - name: Derive project ref and functions base
+        id: derive
         shell: bash
         run: |
           set -euo pipefail
-          url="${SUPABASE_URL}${FUNCTIONS_PATH}/${{ matrix.fn }}"
+          test -n "${SUPABASE_URL:-}" || { echo "SUPABASE_URL missing"; exit 1; }
+          REF=$(echo "$SUPABASE_URL" | sed -E 's#^https?://([^.]+)\.supabase\.co.*#\1#')
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "functions_base=https://$REF.functions.supabase.co" >> "$GITHUB_OUTPUT"
+          echo "Using project ref: $REF"
+
+          HOST=$(echo "$SUPABASE_URL" | sed -E 's#https?://([^/]+)/?.*#\1#')
+          echo "Resolving $HOST ..."
+          getent hosts "$HOST" || { echo "DNS lookup failed for $HOST"; exit 1; }
+
+      - name: Call ${{ matrix.fn }}
+        shell: bash
+        env:
+          FUNCTIONS_BASE: ${{ steps.derive.outputs.functions_base }}
+        run: |
+          set -euo pipefail
+          url="${FUNCTIONS_BASE}/${{ matrix.fn }}"
           echo "→ POST $url"
+
+          # liten pre-test: 404 = feil navn/deploy, 401/403 = auth, 405 = metode/ok domene
+          code_head=$(curl -sS -i -X OPTIONS "$url" -w '%{http_code}' -o /tmp/pre_body || true)
+          echo "Preflight status: $code_head"
+          tail -c 800 /tmp/pre_body || true
+          echo
+
           for i in 1 2 3; do
             code=$(curl -sS -i --fail-with-body -X POST "$url" \
               -H "Authorization: Bearer $ANON" \
@@ -42,17 +57,14 @@ jobs:
               --data '{"reason":"github-schedule"}' \
               -w '%{http_code}' -o /tmp/body) || true
 
-            echo -e "\nStatus: $code"
-            tail -c 2000 /tmp/body || true
-            echo
+            echo -e "\nHTTP: $code"; tail -c 3000 /tmp/body || true; echo
 
             if [ "$code" = "200" ] || [ "$code" = "204" ]; then
-              echo "✓ ${{ matrix.fn }} ok"
-              break
+              echo "✓ ${{ matrix.fn }} ok"; break
             fi
 
             echo "✗ attempt $i"
-            if [ "$i" -lt 3 ]; then sleep 30; else exit 1; fi
+            if [ "$i" -lt 3 ]; then sleep 25; else exit 1; fi
           done
 
   batch_parse:
@@ -63,14 +75,25 @@ jobs:
       matrix:
         fn: [hnt_parse, nord_parse]
     steps:
-      - name: Wait a bit for collectors
-        run: sleep 300
-
-      - name: Invoke ${{ matrix.fn }}
+      - name: Derive project ref and functions base
+        id: derive
         shell: bash
         run: |
           set -euo pipefail
-          url="${SUPABASE_URL}${FUNCTIONS_PATH}/${{ matrix.fn }}"
+          REF=$(echo "$SUPABASE_URL" | sed -E 's#^https?://([^.]+)\.supabase\.co.*#\1#')
+          echo "functions_base=https://$REF.functions.supabase.co" >> "$GITHUB_OUTPUT"
+          echo "Using project ref: $REF"
+
+      - name: Wait a bit
+        run: sleep 300
+
+      - name: Call ${{ matrix.fn }}
+        shell: bash
+        env:
+          FUNCTIONS_BASE: ${{ steps.derive.outputs.functions_base }}
+        run: |
+          set -euo pipefail
+          url="${FUNCTIONS_BASE}/${{ matrix.fn }}"
           echo "→ POST $url"
           for i in 1 2 3; do
             code=$(curl -sS -i --fail-with-body -X POST "$url" \
@@ -81,15 +104,12 @@ jobs:
               --data '{"reason":"github-schedule"}' \
               -w '%{http_code}' -o /tmp/body) || true
 
-            echo -e "\nStatus: $code"
-            tail -c 2000 /tmp/body || true
-            echo
+            echo -e "\nHTTP: $code"; tail -c 3000 /tmp/body || true; echo
 
             if [ "$code" = "200" ] || [ "$code" = "204" ]; then
-              echo "✓ ${{ matrix.fn }} ok"
-              break
+              echo "✓ ${{ matrix.fn }} ok"; break
             fi
 
             echo "✗ attempt $i"
-            if [ "$i" -lt 3 ]; then sleep 30; else exit 1; fi
+            if [ "$i" -lt 3 ]; then sleep 25; else exit 1; fi
           done

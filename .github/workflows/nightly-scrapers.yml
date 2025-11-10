@@ -7,8 +7,6 @@ on:
 
 env:
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-  FUNCTIONS_PATH: /functions/v1
-  SRK: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
   ANON: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
 
 jobs:
@@ -18,6 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         fn: [hnt_postliste, hmn_postliste, scrape_nord, kommunale_postlister]
+
     steps:
       - name: Derive project ref and functions base
         id: derive
@@ -26,13 +25,10 @@ jobs:
           set -euo pipefail
           test -n "${SUPABASE_URL:-}" || { echo "SUPABASE_URL missing"; exit 1; }
           REF=$(echo "$SUPABASE_URL" | sed -E 's#^https?://([^.]+)\.supabase\.co.*#\1#')
-          echo "ref=$REF" >> "$GITHUB_OUTPUT"
           echo "functions_base=https://$REF.functions.supabase.co" >> "$GITHUB_OUTPUT"
           echo "Using project ref: $REF"
-
           HOST=$(echo "$SUPABASE_URL" | sed -E 's#https?://([^/]+)/?.*#\1#')
-          echo "Resolving $HOST ..."
-          getent hosts "$HOST" || { echo "DNS lookup failed for $HOST"; exit 1; }
+          echo "Resolving $HOST ..."; getent hosts "$HOST" || { echo "DNS lookup failed for $HOST"; exit 1; }
 
       - name: Call ${{ matrix.fn }}
         shell: bash
@@ -43,29 +39,21 @@ jobs:
           url="${FUNCTIONS_BASE}/${{ matrix.fn }}"
           echo "→ POST $url"
 
-          # liten pre-test: 404 = feil navn/deploy, 401/403 = auth, 405 = metode/ok domene
-          code_head=$(curl -sS -i -X OPTIONS "$url" -w '%{http_code}' -o /tmp/pre_body || true)
-          echo "Preflight status: $code_head"
-          tail -c 800 /tmp/pre_body || true
-          echo
+          # Preflight: 404 = feil navn/deploy, 401/403 = auth, 405 = ok domene
+          code_head=$(curl -sS -i -X OPTIONS "$url" -w '%{http_code}' -o /tmp/pre || true)
+          echo "Preflight status: $code_head"; tail -c 800 /tmp/pre || true; echo
 
           for i in 1 2 3; do
             code=$(curl -sS -i --fail-with-body -X POST "$url" \
               -H "Authorization: Bearer $ANON" \
               -H "apikey: $ANON" \
-              -H "x-cron-key: $CRON_KEY" \
               -H "Content-Type: application/json" \
               --data '{"reason":"github-schedule"}' \
               -w '%{http_code}' -o /tmp/body) || true
 
             echo -e "\nHTTP: $code"; tail -c 3000 /tmp/body || true; echo
-
-            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
-              echo "✓ ${{ matrix.fn }} ok"; break
-            fi
-
-            echo "✗ attempt $i"
-            if [ "$i" -lt 3 ]; then sleep 25; else exit 1; fi
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then echo "✓ ${{ matrix.fn }} ok"; break; fi
+            echo "✗ attempt $i"; if [ "$i" -lt 3 ]; then sleep 25; else exit 1; fi
           done
 
   batch_parse:
@@ -75,6 +63,7 @@ jobs:
       fail-fast: false
       matrix:
         fn: [hnt_parse, nord_parse]
+
     steps:
       - name: Derive project ref and functions base
         id: derive
@@ -85,7 +74,7 @@ jobs:
           echo "functions_base=https://$REF.functions.supabase.co" >> "$GITHUB_OUTPUT"
           echo "Using project ref: $REF"
 
-      - name: Wait a bit
+      - name: Wait a bit for collectors
         run: sleep 300
 
       - name: Call ${{ matrix.fn }}
@@ -100,17 +89,11 @@ jobs:
             code=$(curl -sS -i --fail-with-body -X POST "$url" \
               -H "Authorization: Bearer $ANON" \
               -H "apikey: $ANON" \
-              -H "x-cron-key: $CRON_KEY" \
               -H "Content-Type: application/json" \
               --data '{"reason":"github-schedule"}' \
               -w '%{http_code}' -o /tmp/body) || true
 
             echo -e "\nHTTP: $code"; tail -c 3000 /tmp/body || true; echo
-
-            if [ "$code" = "200" ] || [ "$code" = "204" ]; then
-              echo "✓ ${{ matrix.fn }} ok"; break
-            fi
-
-            echo "✗ attempt $i"
-            if [ "$i" -lt 3 ]; then sleep 25; else exit 1; fi
+            if [ "$code" = "200" ] || [ "$code" = "204" ]; then echo "✓ ${{ matrix.fn }} ok"; break; fi
+            echo "✗ attempt $i"; if [ "$i" -lt 3 ]; then sleep 25; else exit 1; fi
           done

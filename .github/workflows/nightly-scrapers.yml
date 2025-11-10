@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        fn: [smooth_processor, hmn_postliste, scrape_nord, bright_processor]
+        fn: [smooth-processor, hmn_postliste, scrape_nord, bright-processor]
 
     steps:
       - name: Derive project ref and functions base

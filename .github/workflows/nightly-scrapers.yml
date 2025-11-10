@@ -7,8 +7,9 @@ on:
 
 env:
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  FUNCTIONS_PATH: /functions/v1
+  SRK: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
   ANON: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-  CRON_KEY: ${{ secrets.CRON_KEY }}
 
 jobs:
   batch_collect:

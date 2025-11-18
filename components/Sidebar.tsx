@@ -12,6 +12,7 @@ const NAV = [
   { href: "/app/sok", label: "Søk", icon: Search },
   { href: "/app/innsyn", label: "Innsyn-kurv", icon: Inbox },
   { href: "/app/favoritter", label: "Favoritter", icon: Star },
+  { href: "/app/arbeidsliv", label: "Arbeidsliv", icon: FolderOpenDot },
 ];
 
 export function Sidebar() {

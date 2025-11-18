@@ -14,7 +14,9 @@ type Row = {
   etat: string | null;
   innhold: string | null;
   saksnr: string | null;
+  jdato: string | null;        // NY
   jdato_date: string | null;
+  import_date: string | null;  // NY
   avsmot: string | null;
   kw_score: number | null;
 };
@@ -195,7 +197,7 @@ const [sessionId] = useState<string | null>(() => {
     try {
       const { data, error } = await supabase
         .from("recommended_entries")
-        .select("id, etat, innhold, saksnr, jdato_date, avsmot, kw_score")
+        .select("id, etat, innhold, saksnr, jdato, jdato_date, import_date, avsmot, kw_score")
         .order("kw_score", { ascending: false })
         .limit(250);
       if (error) throw error;
@@ -213,23 +215,23 @@ const [sessionId] = useState<string | null>(() => {
     if (!checkingAuth) load(); // hent først når auth er ok
   }, [checkingAuth]);
 
-  const sorted = useMemo(() => {
-    const list = [...rows];
-    if (sortMode === "nyeste") {
-      list.sort(
-        (a, b) =>
-          new Date(b.jdato_date ?? "").getTime() -
-          new Date(a.jdato_date ?? "").getTime()
-      );
-    } else {
-      list.sort(
-        (a, b) =>
-          (b.kw_score ?? Number.NEGATIVE_INFINITY) -
-          (a.kw_score ?? Number.NEGATIVE_INFINITY)
-      );
-    }
-    return list;
-  }, [rows, sortMode]);
+const sorted = useMemo(() => {
+  const list = [...rows];
+  if (sortMode === "nyeste") {
+    list.sort((a, b) => {
+      const ta = a.import_date ? new Date(a.import_date).getTime() : 0;
+      const tb = b.import_date ? new Date(b.import_date).getTime() : 0;
+      return tb - ta; // nyeste import_date først
+    });
+  } else {
+    list.sort(
+      (a, b) =>
+        (b.kw_score ?? Number.NEGATIVE_INFINITY) -
+        (a.kw_score ?? Number.NEGATIVE_INFINITY)
+    );
+  }
+  return list;
+}, [rows, sortMode]);
 
   const toggleOpen = (id: number) => {
     setOpenIds((prev) => {

@@ -1,3 +1,4 @@
+// app/app/anbefalt/page.tsx
 "use client";
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
@@ -14,20 +15,16 @@ type Row = {
   etat: string | null;
   innhold: string | null;
   saksnr: string | null;
-  jdato: string | null;        // NY
+  jdato: string | null;
   jdato_date: string | null;
-  import_date: string | null;  // NY
+  import_date: string | null;
   avsmot: string | null;
   kw_score: number | null;
 };
 
-const CONTACTS: Record<string, string> = {
-  "Levanger kommune": "postmottak@levanger.kommune.no",
-  "Verdal kommune": "postmottak@verdal.kommune.no",
-  "Trøndelag fylkeskommune": "postmottak@trondelagfylke.no",
-  "Statsforvalteren i Trøndelag": "sftl.post@statsforvalteren.no",
-  "Helse Nord-Trøndelag HF": "postmottak@hnt.no",
-  "Helse Midt-Norge RHF": "hmn.postmottak@helse-midt.no",
+type ContactRow = {
+  etat_pattern: string;
+  recipient_email: string;
 };
 
 const fmtDate = (v: string | null) => {
@@ -50,21 +47,31 @@ const esc = (s: unknown) => {
     .replace(/>/g, "&gt;");
 };
 
-// Null-safe kontaktoppslag
-function getContactEmail(etat: string | null | undefined): string {
+// Kontaktoppslag basert på innsyn_contacts fra DB
+function getContactEmail(
+  etat: string | null | undefined,
+  contacts: ContactRow[]
+): string {
   const name = (etat ?? "").trim();
   if (!name) return "";
-  if (CONTACTS[name]) return CONTACTS[name];
+
+  // 1) forsøk eksakt match
+  const exact = contacts.find((c) => c.etat_pattern === name);
+  if (exact) return exact.recipient_email;
+
+  // 2) fallback: case-insensitive "includes"
   const lower = name.toLowerCase();
-  for (const k of Object.keys(CONTACTS)) {
-    if (lower.includes(k.toLowerCase())) return CONTACTS[k];
-  }
-  return "";
+  const fuzzy = contacts.find((c) =>
+    lower.includes(c.etat_pattern.toLowerCase())
+  );
+  return fuzzy?.recipient_email ?? "";
 }
 
-function buildMailto(r: Row) {
-  const to = getContactEmail(r.etat);
-  const subject = encodeURIComponent(`Innsyn i dokument – ${(r.saksnr ?? "").toString()}`);
+function buildMailto(r: Row, contacts: ContactRow[]) {
+  const to = getContactEmail(r.etat, contacts);
+  const subject = encodeURIComponent(
+    `Innsyn i dokument – ${(r.saksnr ?? "").toString()}`
+  );
   const body = [
     "Hei,",
     "",
@@ -78,17 +85,22 @@ function buildMailto(r: Row) {
     "Med vennlig hilsen,",
   ].join("\n");
 
-  return `mailto:${to}?subject=${subject}&body=${encodeURIComponent(body)}`;
+  return `mailto:${encodeURIComponent(to)}?subject=${subject}&body=${encodeURIComponent(
+    body
+  )}`;
 }
 
 export default function Page() {
   // AUTH-guard
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) {
         const u = new URLSearchParams({ redirect: location.pathname });
         location.replace(`/login?${u.toString()}`);
@@ -101,6 +113,7 @@ export default function Page() {
         .maybeSingle();
 
       setUserEmail(user.email ?? null);
+      setUserId(user.id ?? null);
 
       if (!profile?.approved) {
         location.replace("/pending");
@@ -112,6 +125,7 @@ export default function Page() {
 
   // UI state
   const [rows, setRows] = useState<Row[]>([]);
+  const [contacts, setContacts] = useState<ContactRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<"beste" | "nyeste">("beste");
@@ -136,37 +150,28 @@ export default function Page() {
   }, []);
 
   // logging: user + session
-const [userId, setUserId] = useState<string | null>(null);
+  const [sessionId] = useState<string | null>(() => {
+    const key = "nj_session_id";
+    if (typeof window === "undefined") return null;
 
-// Make the state type explicit so TS is happy
-const [sessionId] = useState<string | null>(() => {
-  const key = "nj_session_id";
-  if (typeof window === "undefined") return null;
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
 
-  const existing = localStorage.getItem(key);
-  if (existing) return existing; // existing is string
+    const gen =
+      (typeof crypto !== "undefined" &&
+        (crypto as any).randomUUID?.()) ||
+      `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-  const gen =
-    (typeof crypto !== "undefined" && (crypto as any).randomUUID?.()) ||
-    `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-
-  // gen is guaranteed string here
-  localStorage.setItem(key, gen);
-  return gen;
-});
-  useEffect(() => {
-    (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      setUserId(user?.id ?? null);
-    })();
-  }, []);
+    localStorage.setItem(key, gen);
+    return gen;
+  });
 
   async function logEvent(
     entry_uid: string,
     action: "view_details" | "click_mailto",
     r: Row
   ) {
-    if (!userId) return; // enkel og trygg variant
+    if (!userId) return;
     try {
       await supabase.from("entry_events").insert({
         user_id: userId,
@@ -190,14 +195,60 @@ const [sessionId] = useState<string | null>(() => {
 
   const seenDetails = useRef<Set<number>>(new Set());
 
+  // Legg innsynskrav i innsyn_requests – nå med recipient fra DB
+  async function addInnsynRequestFromEntry(r: Row) {
+    if (!userId) {
+      alert("Du må være innlogget for å legge innsyn i kurven.");
+      return;
+    }
+
+    const recipientEmail = getContactEmail(r.etat, contacts);
+
+    const subject = `Innsyn i dokument – ${r.saksnr ?? ""}`.trim();
+    const bodyLines = [
+      "Hei,",
+      "",
+      "Jeg ber med dette om innsyn i dokumentet.",
+      `Tittel: ${r.innhold ?? ""}`,
+      `Saksnummer: ${r.saksnr ?? ""}`,
+      `Avsender eller mottaker: ${r.avsmot ?? ""}`,
+      "",
+      "Kravet fremsettes etter offentleglova. Jeg ber om elektronisk innsyn.",
+      "",
+      "Med vennlig hilsen,",
+      "",
+    ];
+
+    const { error } = await supabase.from("innsyn_requests").insert({
+      user_id: userId,
+      type: "postjournal",
+      source: "postjournal",
+      source_entry_id: r.id,
+      etat: r.etat ?? null,
+      recipient_email: recipientEmail || null,
+      subject,
+      body: bodyLines.join("\n"),
+      status: "draft",
+    } as any);
+
+    if (error) {
+      console.error(error);
+      alert("Klarte ikke å legge innsyn i kurven.");
+    } else {
+      alert("Lagt i innsynskurven.");
+    }
+  }
+
   // last data
-  const load = async () => {
+  const loadEntries = async () => {
     setLoading(true);
     setErrorMsg(null);
     try {
       const { data, error } = await supabase
         .from("recommended_entries")
-        .select("id, etat, innhold, saksnr, jdato, jdato_date, import_date, avsmot, kw_score")
+        .select(
+          "id, etat, innhold, saksnr, jdato, jdato_date, import_date, avsmot, kw_score"
+        )
         .order("kw_score", { ascending: false })
         .limit(250);
       if (error) throw error;
@@ -211,27 +262,42 @@ const [sessionId] = useState<string | null>(() => {
     }
   };
 
+  const loadContacts = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("innsyn_contacts")
+        .select("etat_pattern, recipient_email");
+      if (error) throw error;
+      setContacts((data ?? []) as ContactRow[]);
+    } catch (e) {
+      console.warn("Klarte ikke å hente innsyn_contacts", e);
+    }
+  };
+
   useEffect(() => {
-    if (!checkingAuth) load(); // hent først når auth er ok
+    if (!checkingAuth) {
+      loadEntries();
+      loadContacts();
+    }
   }, [checkingAuth]);
 
-const sorted = useMemo(() => {
-  const list = [...rows];
-  if (sortMode === "nyeste") {
-    list.sort((a, b) => {
-      const ta = a.import_date ? new Date(a.import_date).getTime() : 0;
-      const tb = b.import_date ? new Date(b.import_date).getTime() : 0;
-      return tb - ta; // nyeste import_date først
-    });
-  } else {
-    list.sort(
-      (a, b) =>
-        (b.kw_score ?? Number.NEGATIVE_INFINITY) -
-        (a.kw_score ?? Number.NEGATIVE_INFINITY)
-    );
-  }
-  return list;
-}, [rows, sortMode]);
+  const sorted = useMemo(() => {
+    const list = [...rows];
+    if (sortMode === "nyeste") {
+      list.sort((a, b) => {
+        const ta = a.import_date ? new Date(a.import_date).getTime() : 0;
+        const tb = b.import_date ? new Date(b.import_date).getTime() : 0;
+        return tb - ta;
+      });
+    } else {
+      list.sort(
+        (a, b) =>
+          (b.kw_score ?? Number.NEGATIVE_INFINITY) -
+          (a.kw_score ?? Number.NEGATIVE_INFINITY)
+      );
+    }
+    return list;
+  }, [rows, sortMode]);
 
   const toggleOpen = (id: number) => {
     setOpenIds((prev) => {
@@ -242,14 +308,12 @@ const sorted = useMemo(() => {
     });
   };
 
-  // Vis lasteskjerm mens vi sjekker auth
   if (checkingAuth) {
     return <main style={{ padding: 40 }}>Laster…</main>;
   }
 
   return (
     <>
-      {/* Liten stil-patch for sticky thead (bruker --header-h) */}
       <style
         dangerouslySetInnerHTML={{
           __html: `
@@ -262,8 +326,6 @@ const sorted = useMemo(() => {
       <header ref={headerRef as any}>
         <h1>Nyhetsjeger – Anbefalte dokumenter</h1>
         <div className="toolbar">
-        
-
           <select
             id="sort"
             className="select"
@@ -279,7 +341,7 @@ const sorted = useMemo(() => {
 
           <button
             className="button"
-            onClick={load}
+            onClick={loadEntries}
             disabled={loading}
             style={{ marginLeft: 8 }}
           >
@@ -403,16 +465,31 @@ const sorted = useMemo(() => {
                             {esc(r.avsmot ?? "—")}
                           </div>
                         </div>
-                        <div style={{ marginTop: 12 }}>
+                        <div
+                          style={{
+                            marginTop: 12,
+                            display: "flex",
+                            gap: 8,
+                            flexWrap: "wrap",
+                          }}
+                        >
                           <a
                             className="button"
-                            href={buildMailto(r)}
+                            href={buildMailto(r, contacts)}
                             onClick={() =>
                               logEvent(String(r.id), "click_mailto", r)
                             }
                           >
-                            Be om innsyn i dokumentet
+                            Skriv e-post selv
                           </a>
+
+                          <button
+                            className="button"
+                            type="button"
+                            onClick={() => addInnsynRequestFromEntry(r)}
+                          >
+                            Legg i innsynskurv
+                          </button>
                         </div>
                       </td>
                     </tr>

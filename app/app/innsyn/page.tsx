@@ -264,77 +264,48 @@ export default function Page() {
 
   // 🔹 OPPDATERT: bruk supabase.functions.invoke("send_innsyn")
   // 🔹 NY: send innsyn via direkte fetch til Edge Function
-  async function handleSend(row: InnsynRow) {
-    if (!row.id) return;
+// 🔹 REN, RIKTIG versjon: bruk Supabase Functions SDK
+async function handleSend(row: InnsynRow) {
+  if (!row.id) return;
 
-    if (!row.recipient_email) {
-      alert("Mangler e-postadresse til mottaker.");
-      return;
-    }
-
-    if (!confirm("Send dette innsynskravet nå?")) return;
-
-    setSendingId(row.id);
-
-    try {
-      // Hent access token fra innlogget bruker
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      const token = session?.access_token;
-      if (!token) {
-        throw new Error("Fant ikke access token (ikke innlogget?)");
-      }
-
-      // Bygg funksjons-URL fra prosjektets base-URL
-      const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      // https://xyz.supabase.co  ->  https://xyz.functions.supabase.co
-      const functionsBase = baseUrl.replace(
-        ".supabase.co",
-        ".functions.supabase.co"
-      );
-
-      // NB: bruk det faktiske navnet på funksjonen i Supabase:
-      const fnUrl = `${functionsBase}/send_innsyn_request`;
-
-      const res = await fetch(fnUrl, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ id: row.id }),
-      });
-
-      let data: any = null;
-      try {
-        data = await res.json();
-      } catch {
-        // hvis funksjonen en dag returnerer plain tekst
-      }
-
-      if (!res.ok || !data?.ok) {
-        console.error("send_innsyn_request error", {
-          status: res.status,
-          body: data,
-        });
-        throw new Error(data?.error || `HTTP ${res.status}`);
-      }
-
-      // Oppdater status/sent_at i UI
-      await load();
-    } catch (error: any) {
-      console.error("handleSend failed", error);
-      alert(
-        `Klarte ikke å sende innsynet.\n\n${
-          error?.message || "Se konsollen for detaljer."
-        }`
-      );
-    } finally {
-      setSendingId(null);
-    }
+  if (!row.recipient_email) {
+    alert("Mangler e-postadresse til mottaker.");
+    return;
   }
+
+  if (!confirm("Send dette innsynskravet nå?")) return;
+
+  setSendingId(row.id);
+
+  try {
+    const { data, error } = await supabase.functions.invoke("send_innsyn", {
+      body: { id: row.id },
+    });
+
+    console.log("send_innsyn response", { data, error });
+
+    if (error || !data?.ok) {
+      throw new Error(
+        (error as any)?.message ??
+          (data as any)?.error ??
+          "Ukjent funksjonsfeil fra edge function"
+      );
+    }
+
+    // Oppdater lista så sent_at / status vises
+    await load();
+  } catch (e: any) {
+    console.error("handleSend error", e);
+    alert(
+      `Klarte ikke å sende innsynet.\n\n${
+        e?.message ?? "Se konsollen (F12 → Console) for detaljer."
+      }`
+    );
+  } finally {
+    setSendingId(null);
+  }
+}
+
 
 
 

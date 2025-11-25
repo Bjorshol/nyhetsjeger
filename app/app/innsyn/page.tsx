@@ -265,6 +265,7 @@ export default function Page() {
   // 🔹 OPPDATERT: bruk supabase.functions.invoke("send_innsyn")
   // 🔹 NY: send innsyn via direkte fetch til Edge Function
 // 🔹 REN, RIKTIG versjon: bruk Supabase Functions SDK
+// 🔹 REN OG RIKTIG: kall edge function slik den heter i Supabase: "send_innsyn_request"
 async function handleSend(row: InnsynRow) {
   if (!row.id) return;
 
@@ -278,11 +279,14 @@ async function handleSend(row: InnsynRow) {
   setSendingId(row.id);
 
   try {
-    const { data, error } = await supabase.functions.invoke("send_innsyn", {
-      body: { id: row.id },
-    });
+    const { data, error } = await supabase.functions.invoke(
+      "send_innsyn_request",
+      {
+        body: { id: row.id },
+      }
+    );
 
-    console.log("send_innsyn response", { data, error });
+    console.log("send_innsyn_request response", { data, error });
 
     if (error || !data?.ok) {
       throw new Error(
@@ -292,22 +296,19 @@ async function handleSend(row: InnsynRow) {
       );
     }
 
-    // Oppdater lista så sent_at / status vises
+    // Oppdater lista så sent_at / status blir riktig
     await load();
   } catch (e: any) {
     console.error("handleSend error", e);
     alert(
       `Klarte ikke å sende innsynet.\n\n${
-        e?.message ?? "Se konsollen (F12 → Console) for detaljer."
+        e?.message || "Se konsollen (F12 → Console) for detaljer."
       }`
     );
   } finally {
     setSendingId(null);
   }
 }
-
-
-
 
   if (checkingAuth) {
     return <main style={{ padding: 40 }}>Laster…</main>;

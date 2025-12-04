@@ -1,7 +1,7 @@
 name: eInnsyn backfill statsforvalteren
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch: {}  # kjør manuelt fra GitHub UI
 
 jobs:
   backfill:
@@ -9,6 +9,8 @@ jobs:
 
     strategy:
       fail-fast: false
+      # Hver "chunk" tar 4 uker
+      # 0,4,8,...,204 dekker ca. 4 år (52 * 4 uker)
       matrix:
         startWeek: [
           0, 4, 8, 12, 16, 20, 24, 28,
@@ -23,24 +25,15 @@ jobs:
     steps:
       - name: Call Supabase function for a 4-week chunk
         env:
-          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+          SUPABASE_FUNCTIONS_BASE: ${{ secrets.SUPABASE_FUNCTIONS_BASE }}
+          SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
         run: |
           set -euo pipefail
           echo "Backfill chunk startWeek=${{ matrix.startWeek }}"
-
-          URL="https://$SUPABASE_PROJECT_ID.functions.supabase.co/ein_result_backfill?yearsBack=4&weeks=4&startWeek=${{ matrix.startWeek }}&size=50&maxPages=200"
-
+          URL="$SUPABASE_FUNCTIONS_BASE/ein_result_backfill?yearsBack=4&weeks=4&startWeek=${{ matrix.startWeek }}&size=50&maxPages=200"
           echo "Kaller: $URL"
 
-          # Kjør curl, men fang opp HTTP-koden og body
-          HTTP_CODE=$(curl -sS -o /tmp/resp.json -w "%{http_code}" -X POST "$URL")
-
-          echo "HTTP-kode: $HTTP_CODE"
-          echo "Respons:"
-          cat /tmp/resp.json || true
-          echo
-
-          if [ "$HTTP_CODE" -ge 400 ]; then
-            echo "Backfill-feil for startWeek=${{ matrix.startWeek }} (HTTP $HTTP_CODE)"
-            exit 1
-          fi
+          curl -fSs -X POST \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+            "$URL"

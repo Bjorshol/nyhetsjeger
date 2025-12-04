@@ -1,0 +1,21 @@
+name: eInnsyn backfill statsforvalteren
+
+on:
+  workflow_dispatch: {}  # kjør manuelt fra GitHub UI
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+
+    strategy:
+      # hver "chunk" tar f.eks. 10 uker
+      matrix:
+        startWeek: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190]
+
+    steps:
+      - name: Call Supabase function for a chunk
+        run: |
+          curl -sS -X POST \
+            "https://$SUPABASE_PROJECT_ID.functions.supabase.co/ein_result_backfill?yearsBack=4&weeks=10&startWeek=${{ matrix.startWeek }}&size=50&maxPages=200"
+        env:
+          SUPABASE_PROJECT_ID: your-project-ref-here

@@ -8,6 +8,8 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+const SOURCE = "entries"; // kobling mot entries-tabellen
+
 const styles = `
 :root {
   --bg:#0b0e14; --card:#121826; --muted:#8aa0b6; --text:#e6edf3; --accent:#4ea1ff; --border:#223044; --pill:#1c2536;
@@ -54,6 +56,9 @@ type Entry = {
   etat: string | null;
   innhold: string | null;
   saksnr: string | null;
+  sak_key?: string | null;
+  doknr?: string | null;
+  sak_tittel?: string | null;
   jdato: string | null;
   dokdato: string | null;
   source_type: string | null;
@@ -64,39 +69,54 @@ type Entry = {
   sekvens: number | null;
   tilgangskode: string | null;
   hentet_tid: string | null;
+  kind?: string | null; // saksmappe / journalpost
   extra: any;
 };
-
-const CONTACTS: Record<string, string> = {
-  "Levanger kommune": "postmottak@levanger.kommune.no",
-  "Verdal kommune": "postmottak@verdal.kommune.no",
-  "Trøndelag fylkeskommune": "postmottak@trondelagfylke.no",
-  "Statsforvalteren i Trøndelag": "sftl.post@statsforvalteren.no",
-  "Helse Nord-Trøndelag HF": "postmottak@hnt.no",
-  "Helse Midt-Norge RHF": "hmn.postmottak@helse-midt.no",
-};
-
-function getContactEmail(etat?: string | null) {
-  if (!etat) return null;
-  return CONTACTS[etat] || null;
-}
-
-function encodeRFC3986(str: string) {
-  return encodeURIComponent(str).replace(/[!'()*]/g, (c) =>
-    `%${c.charCodeAt(0).toString(16).toUpperCase()}`
-  );
-}
 
 function fmtDateHuman(s?: string | null) {
   if (!s) return "—";
   try {
     const d = s.length === 10 ? new Date(`${s}T00:00:00`) : new Date(s);
-    return d.toLocaleDateString("no-NO", { year: "numeric", month: "2-digit", day: "2-digit" });
+    return d.toLocaleDateString("no-NO", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
   } catch {
     return s as string;
   }
 }
 
+function esc(s?: string | null) {
+  return String(s ?? "").replace(
+    /[&<>"']/g,
+    (m) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[m]!
+      )
+  );
+}
+
+// saksnøkkel
+function getCaseKey(r: Entry): string | null {
+  if (r.sak_key) return String(r.sak_key);
+  if (r.saksnr) return r.saksnr.split("-")[0];
+  return null;
+}
+
+function fmtKind(kind?: string | null): string {
+  if (kind === "saksmappe") return "Saksmappe";
+  if (kind === "journalpost") return "Postjournal";
+  if (!kind) return "—";
+  return kind;
+}
+
+// standard emne / tekst til innsynsforespørselen
 function buildInnsynSubject(r: Entry) {
   const etat = r.etat || "virksomheten";
   const saks = r.saksnr ? ` – sak ${r.saksnr}` : "";
@@ -126,19 +146,13 @@ function buildInnsynBody(r: Entry) {
   ].join("\n");
 }
 
-function buildMailtoHref(r: Entry) {
-  const to = getContactEmail(r.etat) || "";
-  const subject = encodeRFC3986(buildInnsynSubject(r));
-  const body = encodeRFC3986(buildInnsynBody(r));
-  return `mailto:${to}?subject=${subject}&body=${body}`;
-}
-
-function esc(s?: string | null) {
-  return String(s ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]!));
+// nøkkel vi bruker i UI for å markere at noe er lagt i innsynskurven
+function requestedKey(source: string, id: number | string | undefined | null) {
+  if (id == null) return "";
+  return `${source}:${id}`;
 }
 
 export default function PostlisterPage() {
-  // sticky offset
   const headerRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const el = headerRef.current;
@@ -157,26 +171,57 @@ export default function PostlisterPage() {
     };
   }, []);
 
-  // user + session + logger
   const [userId, setUserId] = useState<string | null>(null);
   const [sessionId] = useState(() => {
     const k = "nj_session_id";
     if (typeof window === "undefined") return null;
     let v = localStorage.getItem(k);
-    if (!v) { v = crypto.randomUUID(); localStorage.setItem(k, v); }
+    if (!v) {
+      v = crypto.randomUUID();
+      localStorage.setItem(k, v);
+    }
     return v;
   });
 
+  // hvilke poster er i innsynskurven (for denne brukeren)
+  const [requested, setRequested] = useState<Set<string>>(new Set());
+
   useEffect(() => {
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       setUserId(user?.id ?? null);
+
+      if (user?.id) {
+        const { data, error } = await supabase
+          .from("innsyn_requests")
+          .select("source, source_entry_id, type")
+          .eq("user_id", user.id)
+          .eq("type", "postjournal"); // vi bruker kun denne typen her
+
+        if (!error && data) {
+          const s = new Set<string>();
+          for (const row of data as any[]) {
+            if (row.source_entry_id != null) {
+              s.add(requestedKey(row.source, row.source_entry_id));
+            }
+          }
+          setRequested(s);
+        }
+      }
     })();
   }, []);
 
+  function isRequested(r: Entry): boolean {
+    const key = requestedKey(SOURCE, r.id);
+    if (!key) return false;
+    return requested.has(key);
+  }
+
   async function logEvent(
     entry_uid: string,
-    action: "view_details" | "click_mailto",
+    action: "view_details" | "add_innsyn",
     r: Entry
   ) {
     if (!userId) return;
@@ -202,7 +247,7 @@ export default function PostlisterPage() {
 
   const seenDetails = useRef<Set<string>>(new Set());
 
-  // state
+  // hovedlista
   const [q, setQ] = useState("");
   const [sourceType, setSourceType] = useState("");
   const [limit, setLimit] = useState(100);
@@ -214,7 +259,12 @@ export default function PostlisterPage() {
 
   const from = page * limit;
   const columns =
-    "uid, id, etat, innhold, saksnr, jdato, dokdato, source_type, source_url, avsmot, betegnelse, aar, sekvens, tilgangskode, hentet_tid, extra";
+    "uid, id, etat, innhold, saksnr, sak_key, doknr, sak_tittel, jdato, dokdato, source_type, source_url, avsmot, betegnelse, aar, sekvens, tilgangskode, hentet_tid, kind, extra";
+
+  // saker
+  const [caseDocs, setCaseDocs] = useState<Record<string, Entry[]>>({});
+  const [caseLoading, setCaseLoading] = useState<Record<string, boolean>>({});
+  const [caseError, setCaseError] = useState<Record<string, string | null>>({});
 
   async function load() {
     setLoading(true);
@@ -228,8 +278,14 @@ export default function PostlisterPage() {
       if (sourceType) query = query.eq("source_type", sourceType);
       if (q.trim()) {
         const term = q.trim();
-        query = query.or(`etat.ilike.%${term}%,innhold.ilike.%${term}%`);
+        query = query.or(
+          `etat.ilike.%${term}%,innhold.ilike.%${term}%,saksnr.ilike.%${term}%,sak_tittel.ilike.%${term}%`
+        );
       }
+
+      // saksmappene skjules i hovedlista
+      query = query.neq("kind", "saksmappe");
+
       query = query.range(from, from + limit - 1);
 
       const { data, count, error } = await query;
@@ -246,12 +302,51 @@ export default function PostlisterPage() {
     }
   }
 
+  async function loadCaseForEntry(r: Entry) {
+    const sakKey = getCaseKey(r);
+    const etat = r.etat || "";
+    if (!sakKey || !etat) return;
+
+    const key = `${etat}::${sakKey}`;
+
+    if (caseDocs[key] || caseLoading[key]) return;
+
+    setCaseLoading((prev) => ({ ...prev, [key]: true }));
+    setCaseError((prev) => ({ ...prev, [key]: null }));
+
+    try {
+      const { data, error } = await supabase
+        .from("entries")
+        .select(
+          "uid, id, etat, innhold, saksnr, sak_key, doknr, sak_tittel, jdato, dokdato, avsmot, kind"
+        )
+        .eq("etat", etat)
+        .eq("sak_key", sakKey)
+        .order("jdato", { ascending: true, nullsFirst: true })
+        .order("doknr", { ascending: true, nullsFirst: true });
+
+      if (error) throw error;
+
+      setCaseDocs((prev) => ({
+        ...prev,
+        [key]: (data as Entry[]) || [],
+      }));
+    } catch (e: any) {
+      console.error("loadCaseForEntry failed", e);
+      setCaseError((prev) => ({
+        ...prev,
+        [key]: e?.message || "Ukjent feil ved henting av saken",
+      }));
+    } finally {
+      setCaseLoading((prev) => ({ ...prev, [key]: false }));
+    }
+  }
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, limit, sourceType]);
 
-  // debounce søk
   useEffect(() => {
     window.clearTimeout(searchTimer.current);
     searchTimer.current = window.setTimeout(() => {
@@ -261,8 +356,68 @@ export default function PostlisterPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q]);
 
-  const first = useMemo(() => Math.min(from + 1, count || 0), [from, count]);
-  const last = useMemo(() => Math.min(from + rows.length, count || 0), [from, rows.length, count]);
+  const first = useMemo(
+    () => Math.min(from + 1, count || 0),
+    [from, count]
+  );
+  const last = useMemo(
+    () => Math.min(from + rows.length, count || 0),
+    [from, rows.length, count]
+  );
+
+  async function addToInnsyn(r: Entry) {
+    if (!userId) {
+      alert("Du må være innlogget for å bruke innsynslisten.");
+      return;
+    }
+
+    if (r.id == null) {
+      alert("Fant ikke ID på posten.");
+      return;
+    }
+
+    const sourceEntryId =
+      typeof r.id === "number" ? r.id : Number(r.id as any);
+    if (Number.isNaN(sourceEntryId)) {
+      alert("Ugyldig ID på posten.");
+      return;
+    }
+
+    const key = requestedKey(SOURCE, sourceEntryId);
+    if (!key) return;
+
+    try {
+      const row: any = {
+        user_id: userId,
+        type: "postjournal",
+        source: SOURCE,
+        source_entry_id: sourceEntryId,
+        etat: r.etat,
+        // recipient_email kan vi fylle inn senere – null er lov
+        subject: buildInnsynSubject(r),
+        body: buildInnsynBody(r),
+        // status får default 'draft'
+      };
+
+      const { error } = await supabase
+        .from("innsyn_requests")
+        .insert(row);
+
+      if (error) throw error;
+
+      setRequested((prev) => {
+        const next = new Set(prev);
+        next.add(key);
+        return next;
+      });
+
+      const entry_uid = String(r.uid ?? r.id ?? "");
+      await logEvent(entry_uid, "add_innsyn", r);
+    } catch (e: any) {
+      console.error("addToInnsyn failed", e?.message || e);
+      alert("Klarte ikke å legge til i innsynslisten.");
+    }
+  }
 
   return (
     <>
@@ -270,16 +425,28 @@ export default function PostlisterPage() {
       <header ref={headerRef as any}>
         <h1>Nyhetsjeger – Postlister</h1>
         <div className="toolbar">
-          <a className="button" href="/postlister">Postlister</a>
+          <a className="button" href="/postlister">
+            Postlister
+          </a>
+          <a className="button" href="/innsyn">
+            Innsyn
+          </a>
 
           <input
             className="input"
             type="search"
-            placeholder="Søk i tittel eller virksomhet…"
+            placeholder="Søk i tittel, sak eller virksomhet…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
-          <select className="select" value={sourceType} onChange={(e) => { setSourceType(e.target.value); setPage(0); }}>
+          <select
+            className="select"
+            value={sourceType}
+            onChange={(e) => {
+              setSourceType(e.target.value);
+              setPage(0);
+            }}
+          >
             <option value="">Alle kilder</option>
             <option value="ec">Kommunale (ElementsCloud)</option>
             <option value="pdf">Helseforetak (PDF)</option>
@@ -288,13 +455,20 @@ export default function PostlisterPage() {
           <select
             className="select"
             value={String(limit)}
-            onChange={(e) => { setLimit(parseInt(e.target.value, 10) || 100); setPage(0); }}
+            onChange={(e) => {
+              setLimit(parseInt(e.target.value, 10) || 100);
+              setPage(0);
+            }}
           >
             <option>50</option>
             <option>100</option>
             <option>200</option>
           </select>
-          <button className="button" onClick={() => load()} disabled={loading}>
+          <button
+            className="button"
+            onClick={() => load()}
+            disabled={loading}
+          >
             {loading ? "Laster…" : "Oppdater"}
           </button>
         </div>
@@ -305,7 +479,8 @@ export default function PostlisterPage() {
           <table>
             <thead>
               <tr>
-                <th style={{ width: "28%" }}>Virksomhet</th>
+                <th style={{ width: "24%" }}>Virksomhet</th>
+                <th style={{ width: "12%" }}>Type</th>
                 <th>Tittel</th>
                 <th style={{ width: "14%" }}>Saksnr</th>
                 <th style={{ width: "14%" }}>Dato</th>
@@ -314,81 +489,258 @@ export default function PostlisterPage() {
             <tbody>
               {loading && rows.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="empty">Laster…</td>
+                  <td colSpan={5} className="empty">
+                    Laster…
+                  </td>
                 </tr>
               ) : rows.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="empty">Ingen treff</td>
+                  <td colSpan={5} className="empty">
+                    Ingen treff
+                  </td>
                 </tr>
               ) : (
                 rows.flatMap((r) => {
                   const key = (r.uid ?? r.id ?? Math.random()).toString();
                   const dato = r.jdato || r.dokdato || null;
+                  const sakKey = getCaseKey(r);
+                  const caseStateKey =
+                    sakKey && r.etat ? `${r.etat}::${sakKey}` : null;
+                  const docs = caseStateKey
+                    ? caseDocs[caseStateKey]
+                    : undefined;
+                  const docsLoading = caseStateKey
+                    ? caseLoading[caseStateKey]
+                    : false;
+                  const docsError = caseStateKey
+                    ? caseError[caseStateKey]
+                    : null;
+
+                  const caseTitle =
+                    (docs &&
+                      docs.find((d) => d.sak_tittel)?.sak_tittel) ||
+                    r.sak_tittel ||
+                    null;
+
+                  const requestedHere = isRequested(r);
+
                   return [
                     <tr
                       key={key}
                       className="row"
                       onClick={(e) => {
-                        const tr = e.currentTarget as HTMLTableRowElement;
+                        const tr =
+                          e.currentTarget as HTMLTableRowElement;
                         const open = tr.classList.contains("open");
-                        document.querySelectorAll("tbody .row.open").forEach((el) => el.classList.remove("open"));
+                        document
+                          .querySelectorAll("tbody .row.open")
+                          .forEach((el) =>
+                            el.classList.remove("open")
+                          );
                         if (!open) {
                           tr.classList.add("open");
                           if (!seenDetails.current.has(key)) {
                             seenDetails.current.add(key);
-                            logEvent(String(r.uid ?? r.id ?? ""), "view_details", r);
+                            const entry_uid = String(
+                              r.uid ?? r.id ?? ""
+                            );
+                            logEvent(entry_uid, "view_details", r);
                           }
+                          loadCaseForEntry(r);
                         }
                       }}
                     >
                       <td className="etat">{esc(r.etat || "–")}</td>
+                      <td>{esc(fmtKind(r.kind))}</td>
                       <td>
-                        <button className="title-btn">{esc(r.innhold || "—")}</button>
-                        {r.source_type ? <span className="pill" style={{ marginLeft: 6 }}>{esc(r.source_type)}</span> : null}
+                        <button className="title-btn">
+                          {esc(r.innhold || "—")}
+                        </button>
+                        {r.source_type ? (
+                          <span
+                            className="pill"
+                            style={{ marginLeft: 6 }}
+                          >
+                            {esc(r.source_type)}
+                          </span>
+                        ) : null}
                       </td>
                       <td>{esc(r.saksnr || "—")}</td>
-                      <td className="right"><span className="muted">{esc(fmtDateHuman(dato))}</span></td>
+                      <td className="right">
+                        <span className="muted">
+                          {esc(fmtDateHuman(dato))}
+                        </span>
+                      </td>
                     </tr>,
                     <tr key={`${key}-details`} className="details">
-                      <td colSpan={4}>
+                      <td colSpan={5}>
                         <div className="grid">
-                          <div><span className="muted">Virksomhet:</span><br />{esc(r.etat || "—")}</div>
-                          <div><span className="muted">Saksnr:</span><br />{esc(r.saksnr || "—")}</div>
-                          <div><span className="muted">Journaldato:</span><br />{esc(fmtDateHuman(r.jdato))}</div>
-                          <div><span className="muted">Dok.dato:</span><br />{esc(fmtDateHuman(r.dokdato))}</div>
-                          <div><span className="muted">Betegnelse:</span><br />{esc(r.betegnelse || "—")}</div>
-                          <div><span className="muted">Avsender/Mottaker:</span><br />{esc(r.avsmot || "—")}</div>
+                          <div>
+                            <span className="muted">
+                              Virksomhet:
+                            </span>
+                            <br />
+                            {esc(r.etat || "—")}
+                          </div>
+                          <div>
+                            <span className="muted">Saksnr:</span>
+                            <br />
+                            {esc(r.saksnr || "—")}
+                          </div>
+                          <div>
+                            <span className="muted">
+                              Journaldato:
+                            </span>
+                            <br />
+                            {esc(fmtDateHuman(r.jdato))}
+                          </div>
+                          <div>
+                            <span className="muted">
+                              Dok.dato:
+                            </span>
+                            <br />
+                            {esc(fmtDateHuman(r.dokdato))}
+                          </div>
+                          <div>
+                            <span className="muted">
+                              Betegnelse:
+                            </span>
+                            <br />
+                            {esc(r.betegnelse || "—")}
+                          </div>
+                          <div>
+                            <span className="muted">
+                              Saksnavn:
+                            </span>
+                            <br />
+                            {esc(caseTitle || r.innhold || "—")}
+                          </div>
+                          <div>
+                            <span className="muted">
+                              Avsender/Mottaker:
+                            </span>
+                            <br />
+                            {esc(r.avsmot || "—")}
+                          </div>
+                          <div>
+                            <span className="muted">Type:</span>
+                            <br />
+                            {esc(fmtKind(r.kind))}
+                          </div>
                         </div>
-                        <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          {r.source_url ? (
-                            <a className="link" href={r.source_url} target="_blank" rel="noopener">Åpne kilde</a>
-                          ) : (
-                            <span className="muted">Ingen lenke</span>
-                          )}
-                          <a
-                            className="button"
-                            href={buildMailtoHref(r)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={() => logEvent(String(r.uid ?? r.id ?? ""), "click_mailto", r)}
-                          >
-                            Send innsynskrav
-                          </a>
-                          <button
-                            className="button"
-                            onClick={async (ev) => {
-                              ev.stopPropagation();
-                              const text = buildInnsynBody(r);
-                              try {
-                                await navigator.clipboard.writeText(text);
-                                (ev.currentTarget as HTMLButtonElement).textContent = "Kopiert!";
-                                setTimeout(() => ((ev.currentTarget as HTMLButtonElement).textContent = "Kopier innsynstekst"), 1200);
-                              } catch {
-                                window.prompt("Kopier teksten manuelt (Ctrl/Cmd + C):", text);
-                              }
+
+                        {sakKey && r.etat && (
+                          <div
+                            style={{
+                              marginTop: 16,
+                              paddingTop: 12,
+                              borderTop: "1px solid #223044",
                             }}
                           >
-                            Kopier innsynstekst
+                            <span className="muted">
+                              Alle postene i denne saken:
+                            </span>
+
+                            {docsLoading && (
+                              <div className="muted" style={{ marginTop: 6 }}>
+                                Laster poster i saken…
+                              </div>
+                            )}
+
+                            {docsError && (
+                              <div
+                                className="muted"
+                                style={{ marginTop: 6 }}
+                              >
+                                Feil: {docsError}
+                              </div>
+                            )}
+
+                            {!docsLoading && docs && docs.length > 0 && (
+                              <ul
+                                style={{
+                                  marginTop: 8,
+                                  paddingLeft: 18,
+                                  listStyle: "disc",
+                                }}
+                              >
+                                {docs.map((d) => {
+                                  const dRequested = isRequested(d);
+                                  return (
+                                    <li
+                                      key={String(d.uid ?? d.id)}
+                                      style={{ marginBottom: 6 }}
+                                    >
+                                      <span className="muted">
+                                        {fmtDateHuman(
+                                          d.jdato || d.dokdato
+                                        )}
+                                        {" – "}
+                                      </span>
+                                      <span>
+                                        {d.innhold || "Uten tittel"}
+                                      </span>
+                                      {d.doknr && (
+                                        <span className="muted">
+                                          {" "}
+                                          (dok.nr. {d.doknr})
+                                        </span>
+                                      )}
+                                      <button
+                                        className="button"
+                                        style={{
+                                          marginLeft: 8,
+                                          padding: "2px 8px",
+                                          fontSize: 12,
+                                        }}
+                                        disabled={dRequested}
+                                        onClick={(ev) => {
+                                          ev.stopPropagation();
+                                          if (!dRequested) addToInnsyn(d);
+                                        }}
+                                      >
+                                        {dRequested
+                                          ? "Innsynskrav sendt"
+                                          : "Legg til i innsynslisten"}
+                                      </button>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+
+                            {!docsLoading &&
+                              docs &&
+                              docs.length === 0 && (
+                                <div
+                                  className="muted"
+                                  style={{ marginTop: 6 }}
+                                >
+                                  Fant ingen andre poster i denne saken.
+                                </div>
+                              )}
+                          </div>
+                        )}
+
+                        <div
+                          style={{
+                            marginTop: 12,
+                            display: "flex",
+                            gap: 8,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <button
+                            className="button"
+                            disabled={requestedHere}
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              if (!requestedHere) addToInnsyn(r);
+                            }}
+                          >
+                            {requestedHere
+                              ? "Innsynskrav sendt"
+                              : "Legg til i innsynslisten"}
                           </button>
                         </div>
                       </td>
@@ -400,9 +752,15 @@ export default function PostlisterPage() {
           </table>
 
           <div className="footer">
-            <div>{count > 0 ? `${first}–${last} av ${count}` : "–"}</div>
             <div>
-              <button className="button" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
+              {count > 0 ? `${first}–${last} av ${count}` : "–"}
+            </div>
+            <div>
+              <button
+                className="button"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+              >
                 Forrige
               </button>
               <button

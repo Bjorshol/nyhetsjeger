@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        fn: [smooth-processor, hmn_postliste, scrape_nord, bright-processor, nord_parse, einnsyn_scrape, tfk_scrape, vegvesen_scrape]
+        fn: [einnsyn_scrape, tfk_scrape]
 
     steps:
       - name: Derive project ref and functions base
@@ -62,7 +62,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        fn: [hnt_parse, nord_parse]
+        fn: []
 
     steps:
       - name: Derive project ref and functions base

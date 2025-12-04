@@ -1,7 +1,7 @@
 name: eInnsyn backfill statsforvalteren
 
 on:
-  workflow_dispatch: {}  # kjør manuelt fra GitHub UI
+  workflow_dispatch: {}
 
 jobs:
   backfill:
@@ -9,45 +9,38 @@ jobs:
 
     strategy:
       fail-fast: false
-      # max 4 parallelle for å ikke være idiot mot eInnsyn
-      max-parallel: 4
-      # én uke per jobb: 0 = denne uka, 1 = forrige uke, …, 207 ≈ 4 år tilbake
       matrix:
         startWeek: [
-          0, 1, 2, 3, 4, 5, 6, 7,
-          8, 9, 10, 11, 12, 13, 14, 15,
-          16, 17, 18, 19, 20, 21, 22, 23,
-          24, 25, 26, 27, 28, 29, 30, 31,
-          32, 33, 34, 35, 36, 37, 38, 39,
-          40, 41, 42, 43, 44, 45, 46, 47,
-          48, 49, 50, 51, 52, 53, 54, 55,
-          56, 57, 58, 59, 60, 61, 62, 63,
-          64, 65, 66, 67, 68, 69, 70, 71,
-          72, 73, 74, 75, 76, 77, 78, 79,
-          80, 81, 82, 83, 84, 85, 86, 87,
-          88, 89, 90, 91, 92, 93, 94, 95,
-          96, 97, 98, 99, 100, 101, 102, 103,
-          104, 105, 106, 107, 108, 109, 110, 111,
-          112, 113, 114, 115, 116, 117, 118, 119,
-          120, 121, 122, 123, 124, 125, 126, 127,
-          128, 129, 130, 131, 132, 133, 134, 135,
-          136, 137, 138, 139, 140, 141, 142, 143,
-          144, 145, 146, 147, 148, 149, 150, 151,
-          152, 153, 154, 155, 156, 157, 158, 159,
-          160, 161, 162, 163, 164, 165, 166, 167,
-          168, 169, 170, 171, 172, 173, 174, 175,
-          176, 177, 178, 179, 180, 181, 182, 183,
-          184, 185, 186, 187, 188, 189, 190, 191,
-          192, 193, 194, 195, 196, 197, 198, 199,
-          200, 201, 202, 203, 204, 205, 206, 207
+          0, 4, 8, 12, 16, 20, 24, 28,
+          32, 36, 40, 44, 48, 52, 56, 60,
+          64, 68, 72, 76, 80, 84, 88, 92,
+          96, 100, 104, 108, 112, 116, 120, 124,
+          128, 132, 136, 140, 144, 148, 152, 156,
+          160, 164, 168, 172, 176, 180, 184, 188,
+          192, 196, 200, 204
         ]
 
     steps:
-      - name: Call Supabase function for a 1-week chunk
+      - name: Call Supabase function for a 4-week chunk
         env:
-          SUPABASE_PROJECT_ID: your-project-ref-here
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
         run: |
           set -euo pipefail
-          echo "Backfill startWeek=${{ matrix.startWeek }} (1 uke)"
-          curl -fSs -X POST \
-            "https://$SUPABASE_PROJECT_ID.functions.supabase.co/ein_result_backfill?yearsBack=4&weeks=1&startWeek=${{ matrix.startWeek }}&size=100&maxPages=200"
+          echo "Backfill chunk startWeek=${{ matrix.startWeek }}"
+
+          URL="https://$SUPABASE_PROJECT_ID.functions.supabase.co/ein_result_backfill?yearsBack=4&weeks=4&startWeek=${{ matrix.startWeek }}&size=50&maxPages=200"
+
+          echo "Kaller: $URL"
+
+          # Kjør curl, men fang opp HTTP-koden og body
+          HTTP_CODE=$(curl -sS -o /tmp/resp.json -w "%{http_code}" -X POST "$URL")
+
+          echo "HTTP-kode: $HTTP_CODE"
+          echo "Respons:"
+          cat /tmp/resp.json || true
+          echo
+
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "Backfill-feil for startWeek=${{ matrix.startWeek }} (HTTP $HTTP_CODE)"
+            exit 1
+          fi
